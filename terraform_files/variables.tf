@@ -10,3 +10,9 @@ variable "key_pair_name" {
   type        = string
   sensitive   = true
 }
+
+variable "jenkines_ip_address" {
+  description = "Jenkins IP address"
+  type        = string
+  sensitive   = true
+}
