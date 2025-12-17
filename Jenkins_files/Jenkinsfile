@@ -1,0 +1,90 @@
+pipeline {
+    agent none
+    environment {
+        DOCKER_IMAGE = "soufyanebusiness/devops-python-app:latest"
+    }
+    stages {
+         stage ('Build and Push Docker image'){
+            agent { label 'build-node-1' }
+            steps {
+                checkout scm
+                script{
+                    withCredentials([usernamePassword(
+                        credentialsId: "dockerhub",
+                        usernameVariable: "DOCKERHUB_USER",
+                        passwordVariable: "DOCKERHUB_PASS" 
+                    )]){
+                           sh """
+                                docker build -t \$DOCKER_IMAGE .
+                                docker login -u \$DOCKERHUB_USER -p \$DOCKERHUB_PASS
+                                docker push \$DOCKER_IMAGE
+                                docker logout
+                           """
+                    }
+                }
+            }
+         }
+         stage ('Deploy'){
+                    agent { label "deploy-node-1" }
+                    steps {
+                        checkout scm
+                        // install nginx and certobt
+                        sh """
+                           sudo apt update
+                           sudo apt install -y certbot python3-certbot-nginx nginx
+                        """
+                        // authenticate and install certificate
+                        sh """
+                          sudo certbot --nginx -d soufyanedevops.com --non-interactive --agree-tos --email soufyanedevops@gmail.com
+                        """
+
+                        // Add minikube Nginx configurations to sites-available
+                        sh '''
+                        MINIKUBE_IP=$(minikube ip)
+                        
+                        cat <<EOF | sudo tee /etc/nginx/sites-available/minikube
+                        server {
+                            listen      443 ssl;
+                            server_name soufyanedevops.com;
+
+                            ssl_certificate /etc/letsencrypt/live/soufyanedevops.com/fullchain.pem;
+                            ssl_certificate_key /etc/letsencrypt/live/soufyanedevops.com/privkey.pem;
+                            ssl_protocols TLSv1.2 TLSv1.3;
+                            ssl_prefer_server_ciphers on;
+
+                            location / {
+                                proxy_pass http://${MINIKUBE_IP}:30443;
+                                proxy_set_header Host $host;
+                                proxy_set_header X-Real-IP $remote_addr;
+                                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                                proxy_set_header X-Forwarded-Proto $scheme;
+                            }
+                        }
+
+                        server {
+                            listen      80;
+                            server_name soufyanedevops.com;
+
+                            # Redirect HTTP to HTTPS
+                            return 301 https://\$host\$request_uri;
+                        }
+                        EOF
+                        '''
+                        // Add minikube Nginx configurations to sites-enabled and remove the default configurations
+                        sh """
+                        sudo ln -s /etc/nginx/sites-available/minikube /etc/nginx/sites-enabled/
+                        sudo rm -f /etc/nginx/sites-enabled/default
+                        """
+                        // restart  nginx
+                        sh """
+                           sudo systemctl restart nginx
+                        """
+                        // Start Pod and service
+                        sh """
+                           kubectl apply -f kubernetes_files/Deployment.yaml
+                           kubectl apply -f kubernetes_files/service.yml
+                        """
+                    }
+         }
+    }
+}
